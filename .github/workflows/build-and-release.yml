@@ -17,12 +17,19 @@ jobs:
       contents: write
     env:
       APP_NAME: jvc-camcorder-converter
-      PROJECT_PATH: jvc-camcorder-converter/jvc-camcorder-converter.xcodeproj
+      PROJECT_PATH: jvc-camcorder-converter.xcodeproj
       SCHEME: jvc-camcorder-converter
       CONFIGURATION: Release
       DERIVED_DATA: build/DerivedData
       OUTPUT_DIR: dist
-      ENTITLEMENTS_PATH: jvc-camcorder-converter/jvc-camcorder-converter/jvc-camcorder-converter.entitlements
+      ENTITLEMENTS_PATH: jvc-camcorder-converter/jvc-camcorder-converter.entitlements
+      DEV_ID_CERT_P12: ${{ secrets.DEV_ID_CERT_P12 }}
+      DEV_ID_CERT_PASSWORD: ${{ secrets.DEV_ID_CERT_PASSWORD }}
+      DEV_ID_SIGNING_IDENTITY: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
+      NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+      NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
 
     steps:
       - name: Checkout
@@ -39,13 +46,9 @@ jobs:
             build
 
       - name: Import signing certificate
-        if: ${{ secrets.DEV_ID_CERT_P12 && secrets.DEV_ID_CERT_PASSWORD && secrets.DEV_ID_SIGNING_IDENTITY }}
-        env:
-          DEV_ID_CERT_P12: ${{ secrets.DEV_ID_CERT_P12 }}
-          DEV_ID_CERT_PASSWORD: ${{ secrets.DEV_ID_CERT_PASSWORD }}
-          DEV_ID_SIGNING_IDENTITY: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'temp-pass' }}
+        if: ${{ env.DEV_ID_CERT_P12 != '' && env.DEV_ID_CERT_PASSWORD != '' && env.DEV_ID_SIGNING_IDENTITY != '' }}
         run: |
+          if [ -z "$KEYCHAIN_PASSWORD" ]; then KEYCHAIN_PASSWORD="temp-pass"; fi
           echo "$DEV_ID_CERT_P12" | base64 --decode > /tmp/dev_id_cert.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
           security set-keychain-settings -lut 21600 signing.keychain
@@ -55,9 +58,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" signing.keychain
 
       - name: Codesign app
-        if: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
-        env:
-          DEV_ID_SIGNING_IDENTITY: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
+        if: ${{ env.DEV_ID_SIGNING_IDENTITY != '' }}
         run: |
           APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
           codesign --force --deep --options runtime --timestamp \
@@ -67,11 +68,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Notarize app (optional)
-        if: ${{ secrets.NOTARY_API_KEY && secrets.NOTARY_API_KEY_ID && secrets.NOTARY_API_ISSUER_ID && secrets.DEV_ID_SIGNING_IDENTITY }}
-        env:
-          NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
-          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
-          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        if: ${{ env.NOTARY_API_KEY != '' && env.NOTARY_API_KEY_ID != '' && env.NOTARY_API_ISSUER_ID != '' && env.DEV_ID_SIGNING_IDENTITY != '' }}
         run: |
           mkdir -p "$OUTPUT_DIR"
           APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
@@ -89,7 +86,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$FINAL_ZIP"
 
       - name: Package app (unsigned or signed, no notarization)
-        if: ${{ !secrets.NOTARY_API_KEY || !secrets.NOTARY_API_KEY_ID || !secrets.NOTARY_API_ISSUER_ID }}
+        if: ${{ env.NOTARY_API_KEY == '' || env.NOTARY_API_KEY_ID == '' || env.NOTARY_API_ISSUER_ID == '' }}
         run: |
           mkdir -p "$OUTPUT_DIR"
           APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"

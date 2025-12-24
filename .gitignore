@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+
+# Build products
+build/
+*.build/
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Logs
+*.log
+
+# Temporary files
+*.swp
+*.tmp
+*.bak

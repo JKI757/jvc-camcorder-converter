@@ -1,0 +1,109 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      APP_NAME: jvc-camcorder-converter
+      PROJECT_PATH: jvc-camcorder-converter/jvc-camcorder-converter.xcodeproj
+      SCHEME: jvc-camcorder-converter
+      CONFIGURATION: Release
+      DERIVED_DATA: build/DerivedData
+      OUTPUT_DIR: dist
+      ENTITLEMENTS_PATH: jvc-camcorder-converter/jvc-camcorder-converter/jvc-camcorder-converter.entitlements
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Import signing certificate
+        if: ${{ secrets.DEV_ID_CERT_P12 && secrets.DEV_ID_CERT_PASSWORD && secrets.DEV_ID_SIGNING_IDENTITY }}
+        env:
+          DEV_ID_CERT_P12: ${{ secrets.DEV_ID_CERT_P12 }}
+          DEV_ID_CERT_PASSWORD: ${{ secrets.DEV_ID_CERT_PASSWORD }}
+          DEV_ID_SIGNING_IDENTITY: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'temp-pass' }}
+        run: |
+          echo "$DEV_ID_CERT_P12" | base64 --decode > /tmp/dev_id_cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
+          security set-keychain-settings -lut 21600 signing.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
+          security import /tmp/dev_id_cert.p12 -k signing.keychain -P "$DEV_ID_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s signing.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" signing.keychain
+
+      - name: Codesign app
+        if: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
+        env:
+          DEV_ID_SIGNING_IDENTITY: ${{ secrets.DEV_ID_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements "$ENTITLEMENTS_PATH" \
+            --sign "$DEV_ID_SIGNING_IDENTITY" \
+            "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Notarize app (optional)
+        if: ${{ secrets.NOTARY_API_KEY && secrets.NOTARY_API_KEY_ID && secrets.NOTARY_API_ISSUER_ID && secrets.DEV_ID_SIGNING_IDENTITY }}
+        env:
+          NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
+          NOTARY_ZIP="$OUTPUT_DIR/${APP_NAME}-notary.zip"
+          FINAL_ZIP="$OUTPUT_DIR/${APP_NAME}.zip"
+
+          echo "$NOTARY_API_KEY" | base64 --decode > /tmp/notary_key.p8
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" \
+            --key /tmp/notary_key.p8 \
+            --key-id "$NOTARY_API_KEY_ID" \
+            --issuer "$NOTARY_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$FINAL_ZIP"
+
+      - name: Package app (unsigned or signed, no notarization)
+        if: ${{ !secrets.NOTARY_API_KEY || !secrets.NOTARY_API_KEY_ID || !secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
+          FINAL_ZIP="$OUTPUT_DIR/${APP_NAME}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$FINAL_ZIP"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-macOS
+          path: dist/*.zip
+
+      - name: Create GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
